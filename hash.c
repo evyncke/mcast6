@@ -1,0 +1,96 @@
+/*
+
+Trivial hash tables by evyncke@cisco.com
+
+For sake of speed writing, it is actually implemented as linked list...
+
+January 18, 2014
+
+***********/
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <strings.h>
+#include <arpa/inet.h>
+#include "hash.h"
+
+htable * htable_init(const unsigned int key_size) {
+	htable * p;
+	
+	p = malloc(sizeof(htable)) ;
+	if (p == NULL) return p ;
+	p->entries_count = 0 ;
+	p->keys_count = 0 ;
+	p->key_size = key_size ;
+	p->first = 0 ;
+	return p ;
+}
+
+static void * alloc_copy(void * data, const unsigned int size) {
+	void * p ;
+	
+	p = malloc(size) ;
+	if (p != NULL) memcpy(p, data, size) ;
+	return p;
+}
+
+static struct hentry * hadd(struct hentry * p, htable * table, void * key) {
+	if (p == NULL) {
+		struct hentry * new ;
+		
+		new = malloc(sizeof(struct hentry)) ;
+		if (new == NULL) return new ;
+		new->key = alloc_copy(key, table->key_size) ;
+		if (new->key == NULL) {
+				free(new) ;
+				return NULL ;
+		}
+		new->count = 1 ;
+		new->next = NULL ;
+		table->keys_count ++ ;
+		table->entries_count ++ ;
+		return new ;
+	} else if (memcmp(key, p->key, table->key_size) == 0) {
+		p->count ++ ;
+		table->entries_count ++ ;
+		return p ;	
+	} else {
+		p->next = hadd(p->next, table, key) ;
+		return p ;
+	}
+}
+
+void htable_add(htable * table, void * key) {
+	if (table == NULL) return ;
+	table->entries_count ++;
+	table->first = hadd(table->first, table, key) ;
+}
+
+void htable_dump(htable * table, htable_printer printer) {
+	struct hentry * p ;
+	int i ;
+	
+	if (table == NULL) return ;
+	for (p = table->first; p != NULL; p = p->next) {
+		if (printer == NULL)
+			for (i = 0; i < table->key_size; i++)
+				printf("%2.2X ", p->key[i]) ;
+		else
+			printer(p->key, table->key_size) ;
+		printf(" (%ld)\n", p->count) ;	
+	}
+}
+
+void htable_ipv6_printer(unsigned char * key, unsigned int key_size) {
+	char s[INET6_ADDRSTRLEN] ;
+	
+	if (key_size != 16) printf("Invalid key_size(%d) in htable_ipv6_printer", key_size) ;
+	printf("%s", inet_ntop(AF_INET6, key, s, INET6_ADDRSTRLEN)) ;
+}
+	 
+unsigned long int htable_size(htable * table) {
+		if (table == NULL)
+			return 0 ;
+		else
+			return table->keys_count ;
+}
