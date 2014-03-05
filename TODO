@@ -1,0 +1,1 @@
+- parse RA to save the MAC addresses or routers in order to split NS between r->h, h->r and h->h
