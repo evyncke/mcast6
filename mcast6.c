@@ -76,6 +76,12 @@ unsigned long int ipv6_mcast_ns_hh = 0 ; /* MAC addresses from non-router to non
 unsigned long int ipv6_mcast_ns_hr = 0 ; /* MAC addresses from non-router to router */
 unsigned long int ipv6_mcast_ns_rr = 0 ; /* MAC addresses from router to router */
 
+/* Detailed information about mcast NA */
+unsigned long int ipv6_mcast_na_override = 0 ; /* Override bit is set */
+unsigned long int ipv6_mcast_na_solicited = 0 ; /* Solicited bit is set */
+unsigned long int ipv6_mcast_na_routeroverride = 0 ; /* R & O bits are set */
+unsigned long int ipv6_mcast_na_other = 0 ; /* for the rest */
+
 unsigned long int ipv6_ucast_mdns = 0 ;
 unsigned long int ipv6_mcast_mdns = 0 ; 
 
@@ -184,6 +190,8 @@ void display_stats() {
 		ipv6_ucast_rs, ipv6_mcast_rs, ipv6_ucast_ra, ipv6_mcast_ra, ipv6_ucast_ns, ipv6_mcast_ns, ipv6_ucast_na, ipv6_mcast_na) ;
 	printf("\t\tDetails on mcast NS, sent by :: (i.e. DAD) %ld, host for router %ld, router for host %ld, host for host %ld, router for router %ld\n",
 		ipv6_mcast_ns_dad, ipv6_mcast_ns_hr, ipv6_mcast_ns_rh, ipv6_mcast_ns_hh, ipv6_mcast_ns_rr) ;
+	printf("\t\tDetails on mcast NA, override %ld, solicited %ld, router+override  %ld, other %ld\n",
+		ipv6_mcast_na_override, ipv6_mcast_na_solicited, ipv6_mcast_na_routeroverride, ipv6_mcast_na_other) ;
 	printf("\tmDNS ucast=%ld mcast=%ld, LLMNR ucast=%ld mcast=%ld, SSDP ucast=%ld mcast=%ld, DHCP ucast=%ld mcast=%ld, VRRP mcast=%ld\n",
 		ipv6_ucast_mdns, ipv6_mcast_mdns, ipv6_ucast_llmnr, ipv6_mcast_llmnr, ipv6_ucast_ssdp, ipv6_mcast_ssdp, ipv6_ucast_dhcp, ipv6_mcast_dhcp, ipv6_mcast_vrrp) ;
 }
@@ -209,9 +217,11 @@ void pcap_receive(u_char *args, const struct pcap_pkthdr *header, const u_char *
 	} *ether_header;
 	struct ip6_hdr *ipv6_header ;
 	struct icmp6_hdr * icmpv6_header;
+	struct nd_neighbor_advert * na ;
 	struct udphdr * udp_header ;
 	char ipv6_ascii_address[INET6_ADDRSTRLEN] ;
 	unsigned char * ipv6_address ;
+	unsigned char flags ;
 	int is_ipv6_mcast, source_is_router, destination_is_router ;
 	
 	ether_header = (struct ether_header *) packet ;
@@ -311,36 +321,44 @@ void pcap_receive(u_char *args, const struct pcap_pkthdr *header, const u_char *
 				break ;
 			case ND_NEIGHBOR_SOLICIT:
 				if (verbose) printf(" NS") ; 
-				if (is_ipv6_mcast)
+				if (is_ipv6_mcast) {
 					ipv6_mcast_ns++ ;
-				else
-					ipv6_ucast_ns++ ;
-				/* Check for source address being :: for DAD */
-				ipv6_address = (unsigned char *) &ipv6_header->ip6_src ;
-				if ((ipv6_address[0] == 0) && (ipv6_address[1] == 0) && (ipv6_address[2] == 0) && (ipv6_address[3] == 0) && (ipv6_address[4] == 0) && (ipv6_address[5] == 0))
-					ipv6_mcast_ns_dad++ ;
-				/* Check for source/destination being router */
-				source_is_router = htable_exists(all_rmac, ether_header->ether_shost) ;
-				/* destination_is_router = htable_exists(all_rmac, ether_header->ether_dhost) ; */
-				ipv6_address = (unsigned char *) icmpv6_header ;
-				ipv6_address += 8 ;
-				destination_is_router = htable_exists(all_rip, ipv6_address) ;
-				if (!source_is_router)
-					if (!destination_is_router)
+					/* Check for source address being :: for DAD */
+					ipv6_address = (unsigned char *) &ipv6_header->ip6_src ;
+					if ((ipv6_address[0] == 0) && (ipv6_address[1] == 0) && (ipv6_address[2] == 0) && (ipv6_address[3] == 0) && (ipv6_address[4] == 0) && (ipv6_address[5] == 0))
+						ipv6_mcast_ns_dad++ ;
+					/* Check for source/destination being router */
+					source_is_router = htable_exists(all_rmac, ether_header->ether_shost) ;
+					/* destination_is_router = htable_exists(all_rmac, ether_header->ether_dhost) ; */
+					ipv6_address = (unsigned char *) icmpv6_header ;
+					ipv6_address += 8 ;
+					destination_is_router = htable_exists(all_rip, ipv6_address) ;
+					if (!source_is_router)
+						if (!destination_is_router)
 						ipv6_mcast_ns_hh ++ ;
 					else
 						ipv6_mcast_ns_hr ++ ;
-				else
-					if (!destination_is_router)
-						ipv6_mcast_ns_rh ++ ;
 					else
-						ipv6_mcast_ns_rr ++ ;
+						if (!destination_is_router)
+							ipv6_mcast_ns_rh ++ ;
+						else
+							ipv6_mcast_ns_rr ++ ;
+				} else
+					ipv6_ucast_ns++ ;
 				break ;
 			case ND_NEIGHBOR_ADVERT:
+				na = (struct nd_neighbor_advert *) icmpv6_header ;
 				if (verbose) printf(" NA") ; 
-				if (is_ipv6_mcast)
+				flags = ((unsigned char *) icmpv6_header) [4] ;
+				if (is_ipv6_mcast) {
 					ipv6_mcast_na++ ;
-				else
+					switch (na -> nd_na_flags_reserved) {
+						case ND_NA_FLAG_OVERRIDE: ipv6_mcast_na_override ++ ; break ;
+						case ND_NA_FLAG_SOLICITED: ipv6_mcast_na_solicited ++ ; break ;
+						case ND_NA_FLAG_ROUTER+ND_NA_FLAG_OVERRIDE: ipv6_mcast_na_routeroverride ++ ; break ;
+						default: ipv6_mcast_na_other ++ ;
+					}
+				} else
 					ipv6_ucast_na++ ;
 				/* Check whether it is a router */
 				break ;
