@@ -1,1 +1,5 @@
-- parse RA to save the MAC addresses or routers in order to split NS between r->h, h->r and h->h
+List of potential extensions...
+- dump of unsupported UDP ports/IP protocols of mcast frames
+- read a pcap file
+- save all mcast frames in a PCAP
+

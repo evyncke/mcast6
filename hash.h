@@ -26,6 +26,8 @@ htable * htable_init(const unsigned int key_size) ;
 
 void htable_add(htable * table, void * key) ;
 
+int htable_exists(htable * table, void * key) ;
+
 void htable_dump(htable * table, htable_printer printer) ;
 
 unsigned long int htable_size(htable * table) ;

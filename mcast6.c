@@ -25,13 +25,15 @@ evyncke@cisco.com, 17 January 2014
 #include <netinet/icmp6.h>
 #include <netinet/udp.h>
 
-htable * all_lla_m ;
-htable * all_sl_m ;
-htable * all_o_m ;
-htable * all_g_m ;
-htable * all_smac ;
-htable * all_dmac ;
-htable * all_mmac ;
+htable * all_lla_m ; /* All IPv6 addresses seen as link-local multicast */
+htable * all_sl_m ; /* All IPv6 addresses seen as site-local multicast */
+htable * all_o_m ; /* All IPv6 addresses seen as organization-scope multicast */
+htable * all_g_m ; /* All IPv6 addresses seen as global multicast */
+htable * all_rip ; /* All IPv6 addresses of routers */
+htable * all_rmac ; /* All MAC addresses of routers */
+htable * all_smac ; /* All MAC addresses seen as source */
+htable * all_dmac ; /* All MAC addresses seen as destination */
+htable * all_mmac ; /* All MAC addresses seen as multicats destination */
 
 unsigned long int ether_ucast_frames = 0 ;
 unsigned long int ether_mcast_frames = 0 ;
@@ -64,13 +66,18 @@ unsigned long int ipv6_mcast_ra = 0 ;
 
 unsigned long int ipv6_ucast_ns = 0 ;
 unsigned long int ipv6_mcast_ns = 0 ;
-unsigned long int ipv6_ucast_dad = 0 ;
-unsigned long int ipv6_mcast_dad = 0 ;
 unsigned long int ipv6_ucast_na = 0 ;
 unsigned long int ipv6_mcast_na = 0 ;
 
+/* Detailed information about mcast NS */
+unsigned long int ipv6_mcast_ns_dad = 0 ; /* Source address is :: */
+unsigned long int ipv6_mcast_ns_rh = 0 ; /* MAC addresses from router to non-router */
+unsigned long int ipv6_mcast_ns_hh = 0 ; /* MAC addresses from non-router to non-router */
+unsigned long int ipv6_mcast_ns_hr = 0 ; /* MAC addresses from non-router to router */
+unsigned long int ipv6_mcast_ns_rr = 0 ; /* MAC addresses from router to router */
+
 unsigned long int ipv6_ucast_mdns = 0 ;
-unsigned long int ipv6_mcast_mdns = 0 ;
+unsigned long int ipv6_mcast_mdns = 0 ; 
 
 unsigned long int ipv6_ucast_llmnr = 0 ;
 unsigned long int ipv6_mcast_llmnr = 0 ;
@@ -86,13 +93,14 @@ unsigned long int ipv6_mcast_vrrp = 0 ;
 time_t start_time ;
 int ctrl_c_pressed ;
 int verbose = 0 ;
+int dump_tables = 0 ;
 char * sniffing_device = NULL ;
 
 pcap_t *handle;			/* Session handle */
 char errbuf[PCAP_ERRBUF_SIZE];	/* Error string */
 
 void usage(char * pgm_name) {
-	printf("Usage is: %s <options>\nWhere <options> is a combination of:\n\t-h: display this message\n\t-i device: listen on promiscuous mode on this interface (eth0, en0, ...), else an interface is magically selected.\n\t-v: verbose mode, display one line per IPv6 packet\n",
+	printf("Usage is: %s <options>\nWhere <options> is a combination of:\n\t-d: dump a lot of tables when exiting\n\t-h: display this message\n\t-i device: listen on promiscuous mode on this interface (eth0, en0, ...), else an interface is magically selected.\n\t-v: verbose mode, display one line per IPv6 packet\n",
 		pgm_name) ;
 	exit(0) ;
 }
@@ -101,8 +109,9 @@ int parse_args(int argc, char * argv[]) {
 	int c;
 	
 	opterr = 0 ;
-	while ((c = getopt(argc, argv, "hi:v")) != -1) {
+	while ((c = getopt(argc, argv, "hdi:v")) != -1) {
 		switch(c) {
+			case 'd': dump_tables ++ ;
 			case 'h': usage(argv[0]) ; break ;
 			case 'i': sniffing_device = optarg; break ;
 			case 'v': verbose ++ ;
@@ -171,8 +180,10 @@ void display_stats() {
 		ipv6_o_mcast_packets, ipv6_o_mcast_bytes) ;
 	printf("\tGlobal: unicast: %ld (%ld bytes), multicast: %ld (%ld bytes)\n",
 		ipv6_g_ucast_packets, ipv6_g_ucast_bytes, ipv6_g_mcast_packets, ipv6_g_mcast_bytes) ;
-	printf("\tNDP: RS ucast=%ld mcast=%ld, RA ucast=%ld mcast=%ld, NS ucast=%ld mcast=%ld (including %ld from :: for DAD), NA ucast=%ld mcast=%ld\n",
-		ipv6_ucast_rs, ipv6_mcast_rs, ipv6_ucast_ra, ipv6_mcast_ra, ipv6_ucast_ns, ipv6_mcast_ns, ipv6_mcast_dad, ipv6_ucast_na, ipv6_mcast_na) ;
+	printf("\tNDP: RS ucast=%ld mcast=%ld, RA ucast=%ld mcast=%ld, NS ucast=%ld mcast=%ld, NA ucast=%ld mcast=%ld\n",
+		ipv6_ucast_rs, ipv6_mcast_rs, ipv6_ucast_ra, ipv6_mcast_ra, ipv6_ucast_ns, ipv6_mcast_ns, ipv6_ucast_na, ipv6_mcast_na) ;
+	printf("\t\tDetails on mcast NS, sent by :: (i.e. DAD) %ld, host for router %ld, router for host %ld, host for host %ld, router for router %ld\n",
+		ipv6_mcast_ns_dad, ipv6_mcast_ns_hr, ipv6_mcast_ns_rh, ipv6_mcast_ns_hh, ipv6_mcast_ns_rr) ;
 	printf("\tmDNS ucast=%ld mcast=%ld, LLMNR ucast=%ld mcast=%ld, SSDP ucast=%ld mcast=%ld, DHCP ucast=%ld mcast=%ld, VRRP mcast=%ld\n",
 		ipv6_ucast_mdns, ipv6_mcast_mdns, ipv6_ucast_llmnr, ipv6_mcast_llmnr, ipv6_ucast_ssdp, ipv6_mcast_ssdp, ipv6_ucast_dhcp, ipv6_mcast_dhcp, ipv6_mcast_vrrp) ;
 }
@@ -201,7 +212,7 @@ void pcap_receive(u_char *args, const struct pcap_pkthdr *header, const u_char *
 	struct udphdr * udp_header ;
 	char ipv6_ascii_address[INET6_ADDRSTRLEN] ;
 	unsigned char * ipv6_address ;
-	int is_ipv6_mcast ;
+	int is_ipv6_mcast, source_is_router, destination_is_router ;
 	
 	ether_header = (struct ether_header *) packet ;
 	if (ntohs(ether_header->ether_type) != 0x86dd) {
@@ -295,6 +306,8 @@ void pcap_receive(u_char *args, const struct pcap_pkthdr *header, const u_char *
 					ipv6_mcast_ra++ ;
 				else
 					ipv6_ucast_ra++ ;
+				htable_add(all_rip, &ipv6_header->ip6_src) ;
+				htable_add(all_rmac, ether_header->ether_shost) ;
 				break ;
 			case ND_NEIGHBOR_SOLICIT:
 				if (verbose) printf(" NS") ; 
@@ -305,7 +318,23 @@ void pcap_receive(u_char *args, const struct pcap_pkthdr *header, const u_char *
 				/* Check for source address being :: for DAD */
 				ipv6_address = (unsigned char *) &ipv6_header->ip6_src ;
 				if ((ipv6_address[0] == 0) && (ipv6_address[1] == 0) && (ipv6_address[2] == 0) && (ipv6_address[3] == 0) && (ipv6_address[4] == 0) && (ipv6_address[5] == 0))
-					ipv6_mcast_dad++ ;
+					ipv6_mcast_ns_dad++ ;
+				/* Check for source/destination being router */
+				source_is_router = htable_exists(all_rmac, ether_header->ether_shost) ;
+				/* destination_is_router = htable_exists(all_rmac, ether_header->ether_dhost) ; */
+				ipv6_address = (unsigned char *) icmpv6_header ;
+				ipv6_address += 8 ;
+				destination_is_router = htable_exists(all_rip, ipv6_address) ;
+				if (!source_is_router)
+					if (!destination_is_router)
+						ipv6_mcast_ns_hh ++ ;
+					else
+						ipv6_mcast_ns_hr ++ ;
+				else
+					if (!destination_is_router)
+						ipv6_mcast_ns_rh ++ ;
+					else
+						ipv6_mcast_ns_rr ++ ;
 				break ;
 			case ND_NEIGHBOR_ADVERT:
 				if (verbose) printf(" NA") ; 
@@ -313,6 +342,7 @@ void pcap_receive(u_char *args, const struct pcap_pkthdr *header, const u_char *
 					ipv6_mcast_na++ ;
 				else
 					ipv6_ucast_na++ ;
+				/* Check whether it is a router */
 				break ;
 			case MLD_LISTENER_QUERY:
 			case MLD_LISTENER_REPORT:
@@ -384,6 +414,8 @@ int main(int argc, char *argv[]) {
 	all_sl_m = htable_init(16) ;
 	all_o_m = htable_init(16) ;
 	all_g_m = htable_init(16) ;
+	all_rip = htable_init(16) ;
+	all_rmac = htable_init(6) ;
 	all_smac = htable_init(6) ;
 	all_dmac = htable_init(6) ;
 	all_mmac = htable_init(6) ;
@@ -405,12 +437,19 @@ int main(int argc, char *argv[]) {
 	htable_dump(all_sl_m, htable_ipv6_printer) ;
 	printf("\nList of all organization multicast groups\n") ;
 	htable_dump(all_o_m, htable_ipv6_printer) ;
-	printf("\nList of all link-local multicast groups\n") ;
-	htable_dump(all_lla_m, htable_ipv6_printer) ;
-	printf("\nList of all MAC multicast groups\n") ;
-	htable_dump(all_mmac, NULL) ;
+	if (dump_tables) {
+		printf("\nList of all link-local multicast groups\n") ;
+		htable_dump(all_lla_m, htable_ipv6_printer) ;
+		printf("\nList of all MAC multicast groups\n") ;
+		htable_dump(all_mmac, NULL) ;
+	}
+	printf("\nList of all IP address of routers\n") ;
+	htable_dump(all_rip, htable_ipv6_printer) ;
+	printf("\nList of all MAC of routers\n") ;
+	htable_dump(all_rmac, NULL) ;
 	printf("\n%ld different source MAC addresses and %ld different destination MAC were analyzed; %ld different link-local mcast groups.\n", 
 		htable_size(all_smac), htable_size(all_dmac), htable_size(all_lla_m)) ;
+
 	/* And close the session */
 	pcap_close(handle);
 	return 0;

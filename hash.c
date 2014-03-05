@@ -1,6 +1,6 @@
 /*
 
-Trivial hash tables by evyncke@cisco.com
+Trivial hash tables by evyncke@cisco.com, goal is to make the program more portable by reinventing the wheel
 
 For sake of speed writing, it is actually implemented as linked list...
 
@@ -64,6 +64,22 @@ void htable_add(htable * table, void * key) {
 	if (table == NULL) return ;
 	table->entries_count ++;
 	table->first = hadd(table->first, table, key) ;
+}
+
+static int hexists(struct hentry * p, htable * table, void * key) {
+	if (p == NULL)
+		return 0 ;
+	else if (memcmp(key, p->key, table->key_size) == 0)
+		return -1 ;
+	else
+		return hexists(p->next, table, key) ;
+}
+
+int htable_exists(htable * table, void * key) {
+	if (table == NULL) 	
+		return 0 ;
+	else
+		return hexists(table->first, table, key) ;
 }
 
 void htable_dump(htable * table, htable_printer printer) {
