@@ -77,6 +77,7 @@ unsigned long int ipv6_mcast_ns_hr = 0 ; /* MAC addresses from non-router to rou
 unsigned long int ipv6_mcast_ns_rr = 0 ; /* MAC addresses from router to router */
 
 /* Detailed information about mcast NA */
+unsigned long int ipv6_mcast_na_none = 0 ; /* No flags set */
 unsigned long int ipv6_mcast_na_override = 0 ; /* Override bit is set */
 unsigned long int ipv6_mcast_na_solicited = 0 ; /* Solicited bit is set */
 unsigned long int ipv6_mcast_na_routeroverride = 0 ; /* R & O bits are set */
@@ -190,8 +191,8 @@ void display_stats() {
 		ipv6_ucast_rs, ipv6_mcast_rs, ipv6_ucast_ra, ipv6_mcast_ra, ipv6_ucast_ns, ipv6_mcast_ns, ipv6_ucast_na, ipv6_mcast_na) ;
 	printf("\t\tDetails on mcast NS, sent by :: (i.e. DAD) %ld, host for router %ld, router for host %ld, host for host %ld, router for router %ld\n",
 		ipv6_mcast_ns_dad, ipv6_mcast_ns_hr, ipv6_mcast_ns_rh, ipv6_mcast_ns_hh, ipv6_mcast_ns_rr) ;
-	printf("\t\tDetails on mcast NA, override %ld, solicited %ld, router+override  %ld, other %ld\n",
-		ipv6_mcast_na_override, ipv6_mcast_na_solicited, ipv6_mcast_na_routeroverride, ipv6_mcast_na_other) ;
+	printf("\t\tDetails on mcast NA, no flags %ld, override %ld, solicited %ld, router+override  %ld, other %ld\n",
+		ipv6_mcast_na_none, ipv6_mcast_na_override, ipv6_mcast_na_solicited, ipv6_mcast_na_routeroverride, ipv6_mcast_na_other) ;
 	printf("\tmDNS ucast=%ld mcast=%ld, LLMNR ucast=%ld mcast=%ld, SSDP ucast=%ld mcast=%ld, DHCP ucast=%ld mcast=%ld, VRRP mcast=%ld\n",
 		ipv6_ucast_mdns, ipv6_mcast_mdns, ipv6_ucast_llmnr, ipv6_mcast_llmnr, ipv6_ucast_ssdp, ipv6_mcast_ssdp, ipv6_ucast_dhcp, ipv6_mcast_dhcp, ipv6_mcast_vrrp) ;
 }
@@ -221,7 +222,6 @@ void pcap_receive(u_char *args, const struct pcap_pkthdr *header, const u_char *
 	struct udphdr * udp_header ;
 	char ipv6_ascii_address[INET6_ADDRSTRLEN] ;
 	unsigned char * ipv6_address ;
-	unsigned char flags ;
 	int is_ipv6_mcast, source_is_router, destination_is_router ;
 	
 	ether_header = (struct ether_header *) packet ;
@@ -349,10 +349,11 @@ void pcap_receive(u_char *args, const struct pcap_pkthdr *header, const u_char *
 			case ND_NEIGHBOR_ADVERT:
 				na = (struct nd_neighbor_advert *) icmpv6_header ;
 				if (verbose) printf(" NA") ; 
-				flags = ((unsigned char *) icmpv6_header) [4] ;
 				if (is_ipv6_mcast) {
 					ipv6_mcast_na++ ;
+					na -> nd_na_flags_reserved &= ND_NA_FLAG_OVERRIDE | ND_NA_FLAG_SOLICITED | ND_NA_FLAG_ROUTER ; /* Reset the reserved bits */
 					switch (na -> nd_na_flags_reserved) {
+						case 0: ipv6_mcast_na_none++ ; break ;
 						case ND_NA_FLAG_OVERRIDE: ipv6_mcast_na_override ++ ; break ;
 						case ND_NA_FLAG_SOLICITED: ipv6_mcast_na_solicited ++ ; break ;
 						case ND_NA_FLAG_ROUTER+ND_NA_FLAG_OVERRIDE: ipv6_mcast_na_routeroverride ++ ; break ;
@@ -361,6 +362,10 @@ void pcap_receive(u_char *args, const struct pcap_pkthdr *header, const u_char *
 				} else
 					ipv6_ucast_na++ ;
 				/* Check whether it is a router */
+				if (na -> nd_na_flags_reserved & ND_NA_FLAG_ROUTER) {
+					htable_add(all_rip, &ipv6_header->ip6_src) ;
+					htable_add(all_rmac, ether_header->ether_shost) ;
+				}
 				break ;
 			case MLD_LISTENER_QUERY:
 			case MLD_LISTENER_REPORT:
