@@ -2,4 +2,5 @@ List of potential extensions...
 - dump of unsupported UDP ports/IP protocols of mcast frames
 - read a pcap file
 - save all mcast frames in a PCAP
+- when in RFmon mode, do more check on the 802.11 header (notably whether it is really a data frame)
 

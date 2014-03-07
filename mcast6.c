@@ -35,6 +35,9 @@ htable * all_smac ; /* All MAC addresses seen as source */
 htable * all_dmac ; /* All MAC addresses seen as destination */
 htable * all_mmac ; /* All MAC addresses seen as multicats destination */
 
+unsigned long int wifi_control_frames = 0 ; /* Only relevant in radio monitor mode */
+unsigned long int wifi_management_frames = 0 ; /* Only relevant in radio monitor mode */
+
 unsigned long int ether_ucast_frames = 0 ;
 unsigned long int ether_mcast_frames = 0 ;
 unsigned long int ether_bcast_frames = 0 ;
@@ -100,14 +103,62 @@ unsigned long int ipv6_mcast_vrrp = 0 ;
 time_t start_time ;
 int ctrl_c_pressed ;
 int verbose = 0 ;
+int do_rfmon = 0 ;
+int rfmon_mode = 0 ;
 int dump_tables = 0 ;
 char * sniffing_device = NULL ;
 
 pcap_t *handle;			/* Session handle */
 char errbuf[PCAP_ERRBUF_SIZE];	/* Error string */
 
+#define ETHER_ADDR_LEN	6
+
+struct ieee80211_radiotap_header {
+	u_int8_t        it_version;     /* set to 0 */
+	u_int8_t        it_pad;
+	u_int16_t       it_len;         /* entire length */
+	u_int32_t       it_present;     /* fields present */
+} __attribute__((__packed__));
+
+struct ieee80211_header {
+
+	u_int16_t	wi_fc ; /* Frame control field */
+	u_int16_t	wi_duration ;
+	u_char		wi_daddr[ETHER_ADDR_LEN] ;
+	u_char		wi_saddr[ETHER_ADDR_LEN] ;
+	u_char		wi_faddr[ETHER_ADDR_LEN] ;
+	u_short		wi_sc ; /* Frame sequence control */
+} ;
+
+/* Ethernet header */
+struct ether_header {
+	u_char ether_dhost[ETHER_ADDR_LEN]; /* Destination host address */
+	u_char ether_shost[ETHER_ADDR_LEN]; /* Source host address */
+	u_short ether_type; /* IP? ARP? RARP? etc */
+} ;
+void dump(u_char * p, int len) {
+	int i ;
+
+	while (len > 0) {
+		for (i = 0; (i < 16) && (i < len); i++)
+			printf("%2.2X ", p[i]) ;
+		for (; i < 16; i++)
+			printf("   ") ;
+		printf("  ") ;
+		for (i = 0; (i < 16) && (i < len); i++)
+			if ((' ' <= p[i]) && (p[i] <= 127))
+				printf("%c ", p[i]) ;
+			else
+				printf(". ") ;
+		printf("\n") ;
+		len -= 16 ;
+		p += 16 ;
+	}
+	printf("\n") ;
+}
+
 void usage(char * pgm_name) {
-	printf("Usage is: %s <options>\nWhere <options> is a combination of:\n\t-d: dump a lot of tables when exiting\n\t-h: display this message\n\t-i device: listen on promiscuous mode on this interface (eth0, en0, ...), else an interface is magically selected.\n\t-v: verbose mode, display one line per IPv6 packet\n",
+	printf("Usage is: %s <options>\nWhere <options> is a combination of:\n\t-d: dump a lot of tables when exiting\n\t-h: display this message\n\t-m: put the device in radio monitoriing mode\n\t-i device: listen on promiscuous mode on this interface (eth0, en0, ...), else an interface is magically selected.\n\t-v: verbose mode, display one line per IPv6 packet\n",
 		pgm_name) ;
 	exit(0) ;
 }
@@ -116,11 +167,12 @@ int parse_args(int argc, char * argv[]) {
 	int c;
 	
 	opterr = 0 ;
-	while ((c = getopt(argc, argv, "hdi:v")) != -1) {
+	while ((c = getopt(argc, argv, "dhi:mv")) != -1) {
 		switch(c) {
-			case 'd': dump_tables ++ ;
+			case 'd': dump_tables ++ ; break ;
 			case 'h': usage(argv[0]) ; break ;
 			case 'i': sniffing_device = optarg; break ;
+			case 'm': do_rfmon ++ ; break ;
 			case 'v': verbose ++ ;
 		}
 	}
@@ -150,16 +202,55 @@ pcap_t * init_pcap(char * dev) {
 		net = 0;
 		mask = 0;
 	}
-	/* Open the session in promiscuous mode */
-	handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf);
+	/* Create an handle to the sniffing device */
+	handle = pcap_create(dev, errbuf);
 	if (handle == NULL) {
-		fprintf(stderr, "Couldn't open device %s: %s\n", dev, errbuf);
+		fprintf(stderr, "Cannot open device %s: %s.\n", dev, errbuf) ;
+		return NULL ; // or exit or return an error code or something
+	}
+	if (do_rfmon) {
+		/* Try to set RF Monitor mode */
+		if (pcap_can_set_rfmon(handle) == 1) {
+			printf("Enabling RF monitor mode on Wi-Fi...") ;
+			rfmon_mode = pcap_set_rfmon(handle, 1) == 0;
+			if (rfmon_mode)
+				printf(" [OK]\n") ;
+			else
+				printf(" *** FAILED ***, continuing\n") ;
+		} else
+			fprintf(stderr, "Cannot set %s in RFMON mode.\n", dev) ;
+	}
+	/* Specify the capture length */
+	if (pcap_set_snaplen(handle, BUFSIZ)) {
+		fprintf(stderr, "Couldn't specify the capture length of %d on device %s: %s\n", BUFSIZ, dev, errbuf);
+		return NULL;
+	}
+	/* Specify promiscuous mode... perhaps to be disabled in rfmon mode ??? */
+	if (pcap_set_promisc(handle, 1)) {
+		fprintf(stderr, "Couldn't put device %s in promiscuous mode: %s\n", dev, errbuf);
+		return NULL;
+	}
+	/* Specify time-out */
+	if (pcap_set_timeout(handle, 1000)) {
+		fprintf(stderr, "Couldn't set device %s read timeout: %s\n", dev, errbuf);
+		return NULL;
+	}
+	/* Let's activate it now! */
+	if (pcap_activate(handle)) {
+		fprintf(stderr, "Couldn't activate device %s: %s\n", dev, errbuf);
 		return NULL;
 	}
 	/* Check data-link headers */
-	if (pcap_datalink(handle) != DLT_EN10MB) {
-		fprintf(stderr, "Device %s doesn't provide Ethernet headers - not supported\n", dev);
-		return NULL;
+	if (rfmon_mode) {
+		if (pcap_datalink(handle) != DLT_IEEE802_11_RADIO) {
+			fprintf(stderr, "Device %s doesn't provide WiFi radio tap headers - not supported\n", dev);
+			return NULL;
+		}
+	} else {
+		if (pcap_datalink(handle) != DLT_EN10MB) {
+			fprintf(stderr, "Device %s doesn't provide Ethernet headers - not supported\n", dev);
+			return NULL;
+		}
 	}
 	/* Compile and apply the filter */
 	if (pcap_compile(handle, &fp, filter_exp, 0, net) == -1) {
@@ -207,15 +298,33 @@ void siginfo(int ignore) {
 	display_stats() ;
 }
 
-void pcap_receive(u_char *args, const struct pcap_pkthdr *header, const u_char *packet) {
-	#define ETHER_ADDR_LEN	6
-	
-	/* Ethernet header */
-	struct ether_header {
-		u_char ether_dhost[ETHER_ADDR_LEN]; /* Destination host address */
-		u_char ether_shost[ETHER_ADDR_LEN]; /* Source host address */
-		u_short ether_type; /* IP? ARP? RARP? etc */
-	} *ether_header;
+/* If the sniffing device is in RFMON mode, then advance the pointer to the Ethernet header */
+
+u_char* skip_rfmon_data(u_char *packet) {
+	struct ieee80211_radiotap_header *rt ;
+	struct ieee80211_header *wi_hdr ;
+
+	if (rfmon_mode) {
+		rt = (struct ieee80211_radiotap_header *) packet ;
+		packet += rt->it_len ; /* Skip the radio tap header */
+		wi_hdr = (struct ieee80211_header *) packet ;
+		packet = (u_char *) (wi_hdr+1) ; /* Skip the 802.11 frame header */
+		/* Now we are 00 00 AA AA 03 00 00 00 followed by EtherType, so, skip this */
+		packet += 6 ;
+		/* And overwrite the DA & SA, so we need 12 bytes and copy the addresses */
+		packet -= 12 ;
+		memcpy(packet, wi_hdr->wi_daddr, 6) ;
+		memcpy(packet + 6, wi_hdr->wi_saddr, 6) ;
+		return packet ;
+		
+	} else
+		return packet ;
+}
+
+void pcap_receive(u_char *args, const struct pcap_pkthdr *header, const u_char *cpacket) {
+
+	u_char * packet ;
+	struct ether_header * ether_header ;
 	struct ip6_hdr *ipv6_header ;
 	struct icmp6_hdr * icmpv6_header;
 	struct nd_neighbor_advert * na ;
@@ -224,6 +333,9 @@ void pcap_receive(u_char *args, const struct pcap_pkthdr *header, const u_char *
 	unsigned char * ipv6_address ;
 	int is_ipv6_mcast, source_is_router, destination_is_router ;
 	
+//	dump((u_char *) cpacket, 128) ;
+	packet = skip_rfmon_data((u_char *) cpacket) ;	
+//	dump(packet, 128) ;
 	ether_header = (struct ether_header *) packet ;
 	if (ntohs(ether_header->ether_type) != 0x86dd) {
 			fprintf(stderr, "This is not an IPv6 frame, pcap does not implement filtering... discarding\n") ;
@@ -447,6 +559,7 @@ int main(int argc, char *argv[]) {
 	if (signal(SIGINT, sigint) == SIG_ERR) fprintf(stderr, "Cannot intercept CTRL-C...\n") ;
 	if (signal(SIGINFO, siginfo) == SIG_ERR) fprintf(stderr, "Cannot intercept CTRL-T...\n") ;
 	printf("%s collecting IPv6 packets in promiscuous mode on %s\n", argv[0], sniffing_device) ;
+	if (rfmon_mode) printf("\tRadio monitoring mode is enabled.\n") ;
 	printf("\tPrinting a '.' every %d IPv6 packet.\n\tPress CTRL-T to display current statistics\n\tPress CTRL-C to exit\n\n",
 		PACKETS_BETWEEN_DOTS) ;
 
@@ -474,6 +587,7 @@ int main(int argc, char *argv[]) {
 		htable_size(all_smac), htable_size(all_dmac), htable_size(all_lla_m)) ;
 
 	/* And close the session */
+	if (rfmon_mode) pcap_set_rfmon(handle, 0) ;
 	pcap_close(handle);
 	return 0;
 }
