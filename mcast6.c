@@ -119,6 +119,9 @@ unsigned long int ipv6_ucast_dhcp = 0 ;
 unsigned long int ipv6_mcast_dhcp = 0 ;
 
 unsigned long int ipv6_mcast_vrrp = 0 ;
+unsigned long int ipv6_mcast_hsrp = 0 ;
+unsigned long int ipv6_mcast_pim = 0 ;
+unsigned long int ipv6_mcast_mld_lr = 0 ;
 
 time_t start_time ;
 int ctrl_c_pressed ;
@@ -304,8 +307,9 @@ void display_stats() {
 		ipv6_mcast_ns_dad, ipv6_mcast_ns_hr, ipv6_mcast_ns_rh, ipv6_mcast_ns_hh, ipv6_mcast_ns_rr) ;
 	printf("\t\tDetails on mcast NA, no flags %ld, override %ld, solicited %ld, router+override  %ld, other %ld\n",
 		ipv6_mcast_na_none, ipv6_mcast_na_override, ipv6_mcast_na_solicited, ipv6_mcast_na_routeroverride, ipv6_mcast_na_other) ;
-	printf("\tmDNS ucast=%ld mcast=%ld, LLMNR ucast=%ld mcast=%ld, SSDP ucast=%ld mcast=%ld, DHCP ucast=%ld mcast=%ld, VRRP mcast=%ld\n",
-		ipv6_ucast_mdns, ipv6_mcast_mdns, ipv6_ucast_llmnr, ipv6_mcast_llmnr, ipv6_ucast_ssdp, ipv6_mcast_ssdp, ipv6_ucast_dhcp, ipv6_mcast_dhcp, ipv6_mcast_vrrp) ;
+	printf("\tPIM mcast=%ld, MLDv2 listener report mcast=%ld\n", ipv6_mcast_pim, ipv6_mcast_mld_lr) ;
+	printf("\tmDNS ucast=%ld mcast=%ld, LLMNR ucast=%ld mcast=%ld, SSDP ucast=%ld mcast=%ld, DHCP ucast=%ld mcast=%ld, VRRP mcast=%ld, HSRP mcast=%ld\n",
+		ipv6_ucast_mdns, ipv6_mcast_mdns, ipv6_ucast_llmnr, ipv6_mcast_llmnr, ipv6_ucast_ssdp, ipv6_mcast_ssdp, ipv6_ucast_dhcp, ipv6_mcast_dhcp, ipv6_mcast_vrrp, ipv6_mcast_hsrp) ;
 }
 
 void sigint(int ignore) {
@@ -326,11 +330,14 @@ u_char* skip_rfmon_data(u_char *packet) {
 
 	if (rfmon_mode) {
 		rt = (struct ieee80211_radiotap_header *) packet ;
+		// printf("radiotap header length = %d\n", rt->it_len) ;
 		packet += rt->it_len ; /* Skip the radio tap header */
 		wi_hdr = (struct ieee80211_header *) packet ;
 		packet = (u_char *) (wi_hdr+1) ; /* Skip the 802.11 frame header */
+		// dump(packet, 32) ;
 		/* Now we are 00 00 AA AA 03 00 00 00 followed by EtherType, so, skip this */
-		packet += 6 ;
+		/*            00 00 AA AA 03 00 00 00 86 DD 60 0E C1 D1 00 55 */
+		packet += 8 ;
 		/* And overwrite the DA & SA, so we need 12 bytes and copy the addresses */
 		packet -= 12 ;
 		memcpy(packet, wi_hdr->wi_daddr, 6) ;
@@ -346,6 +353,8 @@ void pcap_receive(u_char *args, const struct pcap_pkthdr *header, const u_char *
 	u_char * packet ;
 	struct ether_header * ether_header ;
 	struct ip6_hdr *ipv6_header ;
+	u_char next_header_type ;
+	u_char * next_header_address ;
 	struct icmp6_hdr * icmpv6_header;
 	struct nd_neighbor_advert * na ;
 	struct udphdr * udp_header ;
@@ -353,9 +362,9 @@ void pcap_receive(u_char *args, const struct pcap_pkthdr *header, const u_char *
 	unsigned char * ipv6_address ;
 	int is_ipv6_mcast, source_is_router, destination_is_router ;
 	
-//	dump((u_char *) cpacket, 128) ;
+	// if (rfmon_mode) dump((u_char *) cpacket, 128) ;
 	packet = skip_rfmon_data((u_char *) cpacket) ;	
-//	dump(packet, 128) ;
+	// if (rfmon_mode) dump(packet, 128) ;
 	ether_header = (struct ether_header *) packet ;
 	if (ntohs(ether_header->ether_type) != 0x86dd) {
 			fprintf(stderr, "This is not an IPv6 frame, pcap does not implement filtering... discarding\n") ;
@@ -431,9 +440,21 @@ void pcap_receive(u_char *args, const struct pcap_pkthdr *header, const u_char *
 		}
 	}
 	
+	/* Prepare parsing the extension headers if any */
+
+	next_header_type = ipv6_header->ip6_nxt ;
+	next_header_address = (u_char *) (ipv6_header+1) ;
+
+	/* Do we need to skip HbH */
+	if (next_header_type == IPPROTO_HOPOPTS) {
+		next_header_type = next_header_address[0] ;
+		next_header_address = next_header_address + 8 * (1 + next_header_address[1]) ;
+		if (verbose) printf(" HbH NH: %d", next_header_type) ;
+	}
+
 	/* ICMP statistics */
-	if (ipv6_header->ip6_nxt == IPPROTO_ICMPV6) {
-		icmpv6_header = (struct icmp6_hdr *) (ipv6_header+1) ;
+	if (next_header_type == IPPROTO_ICMPV6) {
+		icmpv6_header = (struct icmp6_hdr *) next_header_address ;
 		switch (icmpv6_header->icmp6_type) {
 			case ND_ROUTER_SOLICIT:
 				if (verbose) printf(" RS") ; 
@@ -499,15 +520,21 @@ void pcap_receive(u_char *args, const struct pcap_pkthdr *header, const u_char *
 					htable_add(all_rmac, ether_header->ether_shost) ;
 				}
 				break ;
+			case MLDV2_LISTENER_REPORT:
+				if (verbose) printf(" MLD listener report") ;
+				if (is_ipv6_mcast)
+					ipv6_mcast_mld_lr++ ;
+				break ;
 			case MLD_LISTENER_QUERY:
 			case MLD_LISTENER_REPORT:
 				if (verbose) printf(" MLD") ; 
 				break ;
+			default: if (verbose) printf(" type=%d", icmpv6_header->icmp6_type) ;
 		}
 	/* end of ICMP */	
 	
-	} else if (ipv6_header->ip6_nxt == IPPROTO_UDP) {
-		udp_header = (struct udphdr *) (ipv6_header+1) ;
+	} else if (next_header_type == IPPROTO_UDP) {
+		udp_header = (struct udphdr *) next_header_address ;
 
 		if (verbose) printf(" %d/udp", ntohs(udp_header->uh_dport)) ;
 		/* DHCP on UDP 546 and 547 */
@@ -538,9 +565,18 @@ void pcap_receive(u_char *args, const struct pcap_pkthdr *header, const u_char *
 				else
 					ipv6_ucast_mdns++ ;
 				if (verbose) printf(" mDNS") ;
+		/* HSRPv6 on port 2029 */ 
+		} else if (ntohs(udp_header->uh_dport) == 2029) {
+				if (is_ipv6_mcast)
+					ipv6_mcast_hsrp++ ;
+				if (verbose) printf(" HSRP") ;
 		} 
 	/* end of UDP */
-	} else if (ipv6_header->ip6_nxt == 112) {
+	} else if (next_header_type == IPPROTO_PIM) {
+		if (verbose) printf(" PIM") ;
+		if (is_ipv6_mcast)
+			ipv6_mcast_pim++ ;
+	} else if (next_header_type == 112) {
 		if (verbose) printf(" VRRP") ;
 		if (is_ipv6_mcast)
 			ipv6_mcast_vrrp++ ;
