@@ -538,7 +538,7 @@ void pcap_receive(u_char *args, const struct pcap_pkthdr *header, const u_char *
 
 		if (verbose) printf(" %d/udp", ntohs(udp_header->uh_dport)) ;
 		/* DHCP on UDP 546 and 547 */
-		if ((ntohs(udp_header->uh_dport) == 546) && (ntohs(udp_header->uh_dport) == 547)) {
+		if ((ntohs(udp_header->uh_dport) == 546) || (ntohs(udp_header->uh_dport) == 547)) {
 				if (is_ipv6_mcast)
 					ipv6_mcast_dhcp++ ;
 				else
